@@ -1,55 +1,87 @@
-use libc::{poll, pollfd};
-use std::fs::File;
-use std::io::{Read, Seek};
-use std::os::unix::io::AsRawFd;
-use std::path::Path;
-use std::thread;
-use std::time::Duration;
+use futures::executor::block_on;
+use gpiod::{Chip, EdgeDetect, Options};
+use paho_mqtt as mqtt; // using paho-mqtt as a client as it's sponsored by the Eclipse foundation
+use serde::Deserialize;
+use serde_yaml;
+use std::{convert::TryInto, process, thread};
 
-const NUM_PINS: usize = 1;
-const PINS: [u32; NUM_PINS] = [30];
-const PIN_NAMES: [&'static str; NUM_PINS] = ["test"];
+#[derive(Deserialize)]
+struct GpioPin {
+    name: String,
+    header_pin: u32,
+}
 
-fn main() {
-    let pin_paths: Vec<String> = PINS
-        .iter()
-        .map(|pin| format!("/sys/class/gpio/gpio{}/value", pin))
-        .collect();
-    let mut pin_files: Vec<File> = pin_paths
-        .iter()
-        .map(|path| File::open(Path::new(path)).unwrap())
-        .collect();
-    let pin_fds: Vec<i32> = pin_files.iter().map(|file| file.as_raw_fd()).collect();
+#[derive(Deserialize)]
+struct GpioChip {
+    path: String,
+    pins: Vec<GpioPin>,
+}
 
-    let mut fds = vec![
-        pollfd {
-            fd: 0,
-            events: 0,
-            revents: 0
-        };
-        NUM_PINS
-    ];
-    for (i, &fd) in pin_fds.iter().enumerate() {
-        fds[i] = pollfd {
-            fd,
-            events: libc::POLLPRI,
-            revents: 0,
-        };
+#[derive(Deserialize)]
+struct Mqtt {
+    topic: String,
+    host: String,
+}
+
+#[derive(Deserialize)]
+struct Config {
+    mqtt: Mqtt,
+    gpiochip: Vec<GpioChip>,
+}
+
+fn connect_to_mqtt(mqtt: &Mqtt) -> std::io::Result<mqtt::AsyncClient> {
+    let client = mqtt::AsyncClient::new(mqtt.host.to_string()).unwrap_or_else(|err| {
+        panic!("Could create MQTT broker for: {}; error {}", mqtt.host, err);
+    });
+
+    if let Err(err) = block_on(async {
+        println!("Connecting to MQTT broker: {}", mqtt.host);
+        client.connect(None).await?;
+        Ok::<(), mqtt::Error>(())
+    }) {
+        eprintln!(
+            "Could not connect to MQTT broker: {}; error {}",
+            mqtt.host, err
+        );
+        process::exit(1);
     }
+    Ok(client)
+}
 
-    loop {
-        unsafe {
-            poll(fds.as_mut_ptr(), fds.len() as u32, -1);
-        }
+fn main() -> std::io::Result<()> {
+    env_logger::init();
+    println!("Starting move-detect...");
+    let cfg_file = std::fs::File::open("/etc/move-detect.yaml").unwrap_or_else(|_| {
+        panic!("Could not open config file: /etc/move-detect.yaml");
+    });
+    let config: Config = serde_yaml::from_reader(cfg_file).unwrap();
+    let mqtt_client = connect_to_mqtt(&config.mqtt).unwrap();
 
-        for (i, fd) in fds.iter().enumerate() {
-            if fd.revents & libc::POLLPRI != 0 {
-                let mut state = String::new();
-                pin_files[i].seek(std::io::SeekFrom::Start(0)).unwrap();
-                pin_files[i].read_to_string(&mut state).unwrap();
-                println!("{} {}", PIN_NAMES[i], state.trim());
-            }
-        }
-        thread::sleep(Duration::from_millis(1));
-    }
+    let mut threads = Vec::new();
+    config.gpiochip.iter().for_each(|gpiochip| {
+        let str_path = gpiochip.path.to_string().clone();
+        let chip = Chip::new(str_path).unwrap_or_else(|err| {
+            panic!("Could not open GPIO chip: {}; error {}", gpiochip.path, err);
+        });
+
+        let pins = gpiochip
+            .pins
+            .iter()
+            .map(|pin| pin.header_pin)
+            .collect::<Vec<u32>>();
+
+        let opts = Options::input(pins).edge(EdgeDetect::Both);
+
+        let mut inputs = chip.request_lines(opts).unwrap();
+
+        let str_path = gpiochip.path.to_string().clone();
+        threads.push(thread::spawn(move || {
+            let event = inputs.read_event().unwrap_or_else(|err| {
+                panic!("Could not read event: {}; error {}", str_path, err);
+            });
+            println!("event: {:?}", event);
+        }));
+    });
+
+    Ok(())
 }

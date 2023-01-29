@@ -6,5 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-sysfs_gpio = "0.6.1"
-libc = "0.2.139"
+gpiod = "0.2.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9.17"
+paho-mqtt = "0.12"
+log = "0.4"
+env_logger = "0.10"
