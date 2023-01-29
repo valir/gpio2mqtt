@@ -3,7 +3,8 @@ use gpiod::{Chip, EdgeDetect, Options};
 use paho_mqtt as mqtt; // using paho-mqtt as a client as it's sponsored by the Eclipse foundation
 use serde::Deserialize;
 use serde_yaml;
-use std::{convert::TryInto, process, thread};
+use std::{convert::TryInto, process, thread, time};
+use log::{debug, info};
 
 #[derive(Deserialize)]
 struct GpioPin {
@@ -48,6 +49,21 @@ fn connect_to_mqtt(mqtt: &Mqtt) -> std::io::Result<mqtt::AsyncClient> {
     Ok(client)
 }
 
+fn handle_event(event: &gpiod::LineEvent, gpiochip: &GpioChip, mqtt: &Mqtt, mqtt_client: &mqtt::AsyncClient) {
+    let pin = gpiochip
+        .pins
+        .iter()
+        .find(|pin| pin.header_pin == event.line.offset())
+        .unwrap();
+    let payload = match event.event_type {
+        gpiod::EventType::RisingEdge => "1",
+        gpiod::EventType::FallingEdge => "0",
+        _ => panic!("Unknown event type"),
+    };
+    let message = mqtt::Message::new(&mqtt.topic, payload, 0);
+    mqtt_client.publish(message);
+}
+
 fn main() -> std::io::Result<()> {
     env_logger::init();
     println!("Starting move-detect...");
@@ -76,12 +92,19 @@ fn main() -> std::io::Result<()> {
 
         let str_path = gpiochip.path.to_string().clone();
         threads.push(thread::spawn(move || {
-            let event = inputs.read_event().unwrap_or_else(|err| {
-                panic!("Could not read event: {}; error {}", str_path, err);
-            });
-            println!("event: {:?}", event);
+            info!("Listening for events on: {}", str_path);
+            loop {
+                let event = inputs.read_event().unwrap_or_else(|err| {
+                    panic!("Could not read event: {}; error {}", str_path, err);
+                });
+                debug!("event: {}: {:?}", str_path, event);
+                handle_event(&event, &gpiochip, &config.mqtt, &mqtt_client);
+            }
         }));
     });
 
+    loop {
+        thread::sleep(time::Duration::from_secs(3600));
+    }
     Ok(())
 }
