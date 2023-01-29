@@ -58,45 +58,95 @@ struct MoveEvent<'a> {
     edge: gpiod::Edge,
 }
 
-fn mqtt_thread(receiver: mpsc::Receiver<MoveEvent<'_>>, config: &Config) {
+struct HeartBeatEvent {}
+
+struct ChannelEvent<'a> {
+    move_event: Option<MoveEvent<'a>>,
+    heartbeat: Option<HeartBeatEvent>,
+}
+
+impl<'a> ChannelEvent<'a> {
+    fn new(move_event: MoveEvent<'a>) -> Self {
+        ChannelEvent {
+            move_event: Some(move_event),
+            heartbeat: None,
+        }
+    }
+}
+
+impl<'a> From<MoveEvent<'a>> for ChannelEvent<'a> {
+    fn from(move_event: MoveEvent<'a>) -> Self {
+        ChannelEvent {
+            move_event: Some(move_event),
+            heartbeat: None,
+        }
+    }
+}
+
+impl<'a> ChannelEvent<'a> {
+    fn new_heartbeat() -> Self {
+        ChannelEvent {
+            move_event: None,
+            heartbeat: Some(HeartBeatEvent {}),
+        }
+    }
+}
+
+impl<'a> From<HeartBeatEvent> for ChannelEvent<'a> {
+    fn from(heartbeat: HeartBeatEvent) -> Self {
+        ChannelEvent {
+            move_event: None,
+            heartbeat: Some(heartbeat),
+        }
+    }
+}
+
+fn mqtt_thread(receiver: mpsc::Receiver<ChannelEvent<'_>>, config: &Config) {
     println!("Starting MQTT worker thread...");
     let mqtt_client = connect_to_mqtt(&config.mqtt).unwrap();
     loop {
         let event = receiver.recv().unwrap();
-        debug!("event: {:?}", event);
-        let unknown_pin = GpioPin {
-            name: "Unknown".to_string(),
-            header_pin: 0,
-        };
-        let mut payload: String = config.mqtt.topic.to_string();
-        payload.push_str(" ");
-        payload.push_str(
-            event
-                .gpiochip
-                .pins
-                .iter()
-                .find(|pin| pin.header_pin as u8 == event.line)
-                .unwrap_or_else(|| &unknown_pin)
-                .name
-                .to_string()
+        event.heartbeat.map(|_| {
+            let payload = format!("{} heartbeat 1", config.mqtt.topic);
+            let message = mqtt::Message::new(&config.mqtt.topic.clone(), payload, 0);
+            mqtt_client.publish(message);
+        });
+        event.move_event.map(|event| {
+            let mut payload: String = config.mqtt.topic.to_string();
+
+            let unknown_pin = GpioPin {
+                name: "Unknown".to_string(),
+                header_pin: 0,
+            };
+            payload.push_str(" ");
+            payload.push_str(
+                event
+                    .gpiochip
+                    .pins
+                    .iter()
+                    .find(|pin| pin.header_pin as u8 == event.line)
+                    .unwrap_or_else(|| &unknown_pin)
+                    .name
+                    .to_string()
+                    .as_str(),
+            );
+            payload.push_str(" ");
+            payload.push_str(
+                match event.edge {
+                    gpiod::Edge::Rising => "1",
+                    gpiod::Edge::Falling => "0",
+                }
+                .to_owned()
                 .as_str(),
-        );
-        payload.push_str(" ");
-        payload.push_str(
-            match event.edge {
-                gpiod::Edge::Rising => "1",
-                gpiod::Edge::Falling => "0",
-            }
-            .to_owned()
-            .as_str(),
-        );
-        debug!("payload: {}", payload);
-        let message = mqtt::Message::new(&config.mqtt.topic.clone(), payload, 0);
-        mqtt_client.publish(message);
+            );
+            debug!("payload: {}", payload);
+            let message = mqtt::Message::new(&config.mqtt.topic.clone(), payload, 0);
+            mqtt_client.publish(message);
+        });
     }
 }
 
-fn gpiod_thread<'a>(gpiochip: &'a GpioChip, sender: mpsc::Sender<MoveEvent<'a>>) {
+fn gpiod_thread<'a>(gpiochip: &'a GpioChip, sender: mpsc::Sender<ChannelEvent<'a>>) {
     info!("Listening for events on: {}", gpiochip.path);
     let chip = Chip::new(gpiochip.path.clone()).unwrap_or_else(|err| {
         panic!("Could not open GPIO chip: {}; error {}", gpiochip.path, err);
@@ -118,14 +168,26 @@ fn gpiod_thread<'a>(gpiochip: &'a GpioChip, sender: mpsc::Sender<MoveEvent<'a>>)
         });
         debug!("event: {}: {:?}", gpiochip.path, event);
         sender
-            .send(MoveEvent {
+            .send(ChannelEvent::new(MoveEvent {
                 gpiochip,
                 line: event.line,
                 edge: event.edge,
-            })
+            }))
             .unwrap_or_else(|err| {
                 error!("Could not send event: {}; error {}", gpiochip.path, err);
             })
+    }
+}
+
+fn heartbeater_thread(sender: mpsc::Sender<ChannelEvent<'_>>) {
+    info!("Starting heartbeat thread...");
+    loop {
+        sender
+            .send(ChannelEvent::new_heartbeat())
+            .unwrap_or_else(|err| {
+                error!("Could not send heartbeat: {}", err);
+            });
+        std::thread::sleep(time::Duration::from_secs(60));
     }
 }
 
@@ -145,6 +207,8 @@ fn main() -> std::io::Result<()> {
             let gpiochip_sender = sender.clone();
             s.spawn(move |_| gpiod_thread(gpiochip, gpiochip_sender));
         }
+        let heartbeater_sender = sender.clone();
+        s.spawn(|_| heartbeater_thread(heartbeater_sender));
     })
     .unwrap();
 
