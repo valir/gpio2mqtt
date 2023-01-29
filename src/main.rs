@@ -38,11 +38,11 @@ fn connect_to_mqtt(mqtt: &Mqtt) -> std::io::Result<mqtt::AsyncClient> {
     });
 
     if let Err(err) = block_on(async {
-        println!("Connecting to MQTT broker: {}", mqtt.host);
+        info!("Connecting to MQTT broker: {}", mqtt.host);
         client.connect(None).await?;
         Ok::<(), mqtt::Error>(())
     }) {
-        eprintln!(
+        error!(
             "Could not connect to MQTT broker: {}; error {}",
             mqtt.host, err
         );
@@ -102,7 +102,7 @@ impl<'a> From<HeartBeatEvent> for ChannelEvent<'a> {
 }
 
 fn mqtt_thread(receiver: mpsc::Receiver<ChannelEvent<'_>>, config: &Config) {
-    println!("Starting MQTT worker thread...");
+    info!("Starting MQTT worker thread...");
     let mqtt_client = connect_to_mqtt(&config.mqtt).unwrap();
     loop {
         let event = receiver.recv().unwrap();
@@ -120,12 +120,7 @@ fn mqtt_thread(receiver: mpsc::Receiver<ChannelEvent<'_>>, config: &Config) {
             };
             payload.push_str(" ");
             payload.push_str(
-                event
-                    .gpiochip
-                    .pins
-                    .iter()
-                    .find(|pin| pin.header_pin as u8 == event.line)
-                    .unwrap_or_else(|| &unknown_pin)
+                event.gpiochip.pins[event.line as usize]
                     .name
                     .to_string()
                     .as_str(),
@@ -193,7 +188,7 @@ fn heartbeater_thread(sender: mpsc::Sender<ChannelEvent<'_>>) {
 
 fn main() -> std::io::Result<()> {
     env_logger::init();
-    println!("Starting move-detect...");
+    info!("Configuring...");
     let cfg_file = std::fs::File::open("/etc/move-detect.yaml").unwrap_or_else(|_| {
         panic!("Could not open config file: /etc/move-detect.yaml");
     });
