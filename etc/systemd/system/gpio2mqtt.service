@@ -1,0 +1,12 @@
+[Unit]
+Description=gpio2mqtt daemon
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Environment=RUST_LOG=gpio2mqtt=debug
+ExecStart=/usr/local/bin/gpio2mqtt
+Restart=on-failure
+RestartSec=10
+

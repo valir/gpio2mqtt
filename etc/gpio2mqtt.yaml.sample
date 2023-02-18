@@ -1,0 +1,21 @@
+mqtt:
+  topic: "root_topic/sub_topic"
+  host: "192.168.X.X"
+
+gpiochip:
+  - path: "gpiochip0"
+    pins:
+      - name: "test"
+        line: 28
+  - path: "gpiochip1"
+    pins:
+      - name: "P8_7"
+        line: 2
+      - name: "P8_8"
+        line: 3
+      - name: "P8_10"
+        line: 4
+      - name: "P8_9"
+        line: 5
+      - name: "P8_27"
+        line: 22
