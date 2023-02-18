@@ -1,6 +1,6 @@
 mqtt:
-  topic: "root_topic/sub_topic"
-  host: "192.168.X.X"
+  topic: "gpio2mqtt"
+  host: "127.0.0.1"
 
 gpiochip:
   - path: "gpiochip0"
