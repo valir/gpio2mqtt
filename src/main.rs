@@ -11,7 +11,7 @@ use std::{process, sync::mpsc, time};
 #[derive(Deserialize, Debug)]
 struct GpioPin {
     name: String,
-    header_pin: u32,
+    line: u32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -116,7 +116,7 @@ fn mqtt_thread(receiver: mpsc::Receiver<ChannelEvent<'_>>, config: &Config) {
 
             let unknown_pin = GpioPin {
                 name: "Unknown".to_string(),
-                header_pin: 0,
+                line: 0,
             };
             payload.push_str(" ");
             payload.push_str(
@@ -142,7 +142,7 @@ fn mqtt_thread(receiver: mpsc::Receiver<ChannelEvent<'_>>, config: &Config) {
 }
 
 fn gpiod_thread<'a>(gpiochip: &'a GpioChip, sender: mpsc::Sender<ChannelEvent<'a>>) {
-    info!("Listening for events on: {}", gpiochip.path);
+    info!("Waiting for events on: {}", gpiochip.path);
     let chip = Chip::new(gpiochip.path.clone()).unwrap_or_else(|err| {
         panic!("Could not open GPIO chip: {}; error {}", gpiochip.path, err);
     });
@@ -150,7 +150,7 @@ fn gpiod_thread<'a>(gpiochip: &'a GpioChip, sender: mpsc::Sender<ChannelEvent<'a
     let pins = gpiochip
         .pins
         .iter()
-        .map(|pin| pin.header_pin)
+        .map(|pin| pin.line)
         .collect::<Vec<u32>>();
 
     let opts = Options::input(pins).edge(EdgeDetect::Both);
@@ -189,8 +189,8 @@ fn heartbeater_thread(sender: mpsc::Sender<ChannelEvent<'_>>) {
 fn main() -> std::io::Result<()> {
     env_logger::init();
     info!("Configuring...");
-    let cfg_file = std::fs::File::open("/etc/move-detect.yaml").unwrap_or_else(|_| {
-        panic!("Could not open config file: /etc/move-detect.yaml");
+    let cfg_file = std::fs::File::open("/etc/gpio2mqtt.yaml").unwrap_or_else(|_| {
+        panic!("Could not open config file: /etc/gpio2mqtt.yaml");
     });
     let config: Config = serde_yaml::from_reader(cfg_file).unwrap();
 
